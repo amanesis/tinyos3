@@ -55,6 +55,8 @@ Mutex active_threads_spinlock = MUTEX_INIT;
 
 #define THREAD_SIZE  (THREAD_TCB_SIZE+THREAD_STACK_SIZE)
 
+#define NUMBER_OF_QUEUES 2 /*----------------index-of-schedule.------ */
+
 //#define MMAPPED_THREAD_MEM 
 #ifdef MMAPPED_THREAD_MEM 
 
@@ -200,7 +202,8 @@ CCB cctx[MAX_CORES];
 */
 
 
-rlnode SCHED;                         /* The scheduler queue */
+/* rlnode SCHED;                         /* The scheduler queue */
+rlnode SCHED[NUMBER_OF_QUEUES]
 rlnode TIMEOUT_LIST;				  /* The list of threads with a timeout */
 Mutex sched_spinlock = MUTEX_INIT;    /* spinlock for scheduler queue */
 
@@ -251,7 +254,7 @@ static void sched_register_timeout(TCB* tcb, TimerDuration timeout)
 static void sched_queue_add(TCB* tcb)
 {
   /* Insert at the end of the scheduling list */
-  rlist_push_back(& SCHED, & tcb->sched_node);
+  rlist_push_back(& SCHED[0], & tcb->sched_node);
 
   /* Restart possibly halted cores */
   cpu_core_restart_one();
@@ -302,10 +305,23 @@ static TCB* sched_queue_select()
   		sched_make_ready(tcb);
   }
 
-  /* Get the head of the SCHED list */
-  rlnode * sel = rlist_pop_front(& SCHED);
+/*--------maybe i need to init rlnode to null---------*/
+rlnode * sel = NULL 
 
-  return sel->tcb;  /* When the list is empty, this is NULL */
+  /* Get the head of the SCHED list */
+ // rlnode * sel = rlist_pop_front(& SCHED); 
+/*-----------------------------------------------------------------*/
+  for (int i = 0 ; i <= NUMBER_OF_QUEUES-1 ; i++)
+  {	
+    if(! is_rlist_empty(& SCHED[i]) )
+    {
+	       sel = rlist_pop_front(& SCHED[i]);
+	       return sel->tcb;	
+    }
+  }
+/*-----------------------------------------------------------------*/
+
+  return NULL;  /* When the list is empty, this is NULL */
 } 
 
 
@@ -509,8 +525,11 @@ static void idle_thread()
   Initialize the scheduler queue
  */
 void initialize_scheduler()
-{
-  rlnode_init(&SCHED, NULL);
+{ 
+ for(int i = 0 ; i <= NUM_OF_QUEUES-1 ; i++)
+  {
+    rlnode_init(&SCHED[i],NULL);
+  }
   rlnode_init(&TIMEOUT_LIST, NULL);
 }
 
