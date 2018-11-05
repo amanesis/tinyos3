@@ -1,4 +1,4 @@
-
+//----
 #include <assert.h>
 #include <sys/mman.h>
 
@@ -54,8 +54,6 @@ Mutex active_threads_spinlock = MUTEX_INIT;
 #define THREAD_TCB_SIZE   (((sizeof(TCB)+SYSTEM_PAGE_SIZE-1)/SYSTEM_PAGE_SIZE)*SYSTEM_PAGE_SIZE)
 
 #define THREAD_SIZE  (THREAD_TCB_SIZE+THREAD_STACK_SIZE)
-
-#define NUMBER_OF_QUEUES 3 /*----------------index-of-schedule.------ */
 
 //#define MMAPPED_THREAD_MEM 
 #ifdef MMAPPED_THREAD_MEM 
@@ -130,14 +128,13 @@ TCB* spawn_thread(PCB* pcb, void (*func)())
   tcb->owner_pcb = pcb;
 
   /* Initialize the other attributes */
-
-  tcb->priority = 0; /*high priority initialization */
-
   tcb->type = NORMAL_THREAD;
   tcb->state = INIT;
   tcb->phase = CTX_CLEAN;
   tcb->thread_func = func;
   tcb->wakeup_time = NO_TIMEOUT;
+  tcb->priority = 9;
+
   rlnode_init(& tcb->sched_node, tcb);  /* Intrusive list node */
 
 
@@ -204,9 +201,8 @@ CCB cctx[MAX_CORES];
   Both of these structures are protected by @c sched_spinlock.
 */
 
-
-/* rlnode SCHED;                         /* The scheduler queue */
-rlnode SCHED[NUMBER_OF_QUEUES]
+static int QuantumCounter=0; // increasing by the yield's calls
+rlnode SCHED[NUMBER_OF_QUEUES];  /* The scheduler queue (an array of rlnodes) */
 rlnode TIMEOUT_LIST;				  /* The list of threads with a timeout */
 Mutex sched_spinlock = MUTEX_INIT;    /* spinlock for scheduler queue */
 
@@ -297,35 +293,29 @@ static void sched_make_ready(TCB* tcb)
   *** MUST BE CALLED WITH sched_spinlock HELD ***
 */
 static TCB* sched_queue_select()
-{ //works, but I need an algorithm for threads that don't take time due to priority ---------------------------
-	// solutions: boost solutions or starvation problem or resources lockouts -------------------------
- 
-  /* Empty the timeout list up to the current time and wake up each thread */
+{
+
+	int priority = NUMBER_OF_QUEUES;
+/*Empty the timeout list up to the current time and wake up each thread */
   TimerDuration curtime = bios_clock();
   while(! is_rlist_empty(&TIMEOUT_LIST)) {
   		TCB* tcb = TIMEOUT_LIST.next->tcb;
   		if(tcb->wakeup_time > curtime)
   			break;
   		sched_make_ready(tcb);
+ }
+
+  
+  /* Get the head of the SCHED list array */
+  /*Looking for the first head of list (NON NULL) so it will be our selected queue */
+  rlnode * sel;
+  do{
+    priority--;
+    sel = rlist_pop_front(& SCHED[priority]);
   }
+  while(sel==NULL && priority>0);
 
-/*--------maybe i need to init rlnode to null---------*/
-rlnode * sel = NULL 
-
-  /* Get the head of the SCHED list */
- // rlnode * sel = rlist_pop_front(& SCHED); 
-/*-----------------------------------------------------------------*/
-  for (int i = 0 ; i <= NUMBER_OF_QUEUES-1 ; i++)
-  {	
-    if(! is_rlist_empty(& SCHED[i]) )
-    {
-	       sel = rlist_pop_front(& SCHED[i]);
-	       return sel->tcb;	
-    }
-  }
-/*-----------------------------------------------------------------*/
-
-  return NULL;  /* When the list is empty, this is NULL */
+  return sel->tcb;  /* When the list is empty, this is NULL */
 } 
 
 
@@ -398,7 +388,7 @@ void sleep_releasing(Thread_state state, Mutex* mx, enum SCHED_CAUSE cause, Time
 /* This function is the entry point to the scheduler's context switching */
 
 void yield(enum SCHED_CAUSE cause)
-{ //-------------------------------------priorities cause, if cause occure-----------------------------
+{ 
   /* Reset the timer, so that we are not interrupted by ALARM */
   bios_cancel_timer();
 
@@ -426,7 +416,26 @@ void yield(enum SCHED_CAUSE cause)
       fprintf(stderr, "BAD STATE for current thread %p in yield: %d\n", current, current->state);
       assert(0);  /* It should not be READY or EXITED ! */
   }
+//--------------------------------------------------------------------------------------------------------
+if(cause == SCHED_MUTEX)
+        (current->counterMutex)++;  
+      else if(cause != SCHED_MUTEX && current->counterMutex >= 0)
+        current->counterMutex = 0;
 
+//--------------------------------------------------------------------------------------------------------
+
+	PrioritizeThreads(cause,current); //fixing the priority of threads
+
+//--------------------------------------------------------------------------------------------------------
+
+ /* Increamenting the Quantum Counter */
+    QuantumCounter++;
+
+    if(QuantumCounter>MaxQuantums)
+      PriorityBoostingMethod(SCHED);
+    if(current->counterMutex > MaxMutexCalls && current->priority>0)
+    { current->priority--; }
+//--------------------------------------------------------------------------------------------------------
   /* Get next */
   TCB* next = sched_queue_select();
 
@@ -456,6 +465,38 @@ void yield(enum SCHED_CAUSE cause)
   gain(preempt);
 }
 
+//-------------------------------------------------------------------------------------------------------------------
+void PrioritizeThreads(enum SCHED_CAUSE cause, TCB* tcb)
+{
+	if(cause == SCHED_QUANTUM && tcb->priority > 0){
+    			(tcb->priority)--;}
+
+	if(cause == SCHED_IO && tcb->priority < 9){
+    			(tcb->priority)++;}
+}
+//--------------------------------------------------------------------------------------------------------------------
+
+void PriorityBoostingMethod(rlnode* priorityTable)
+{
+  int i = 0; 
+  QuantumCounter = 0; /* Initialising the Quantum Counter */
+  rlnode *current;     /*temp rlnode */
+  current = NULL; 
+  
+  do
+  {
+    current = rlist_pop_front(&(priorityTable[i])); /* looking for NON NULL rlist head */
+    i++;
+  } while(i<NUMBER_OF_QUEUES && current->tcb == NULL);
+
+  if(current->tcb != NULL && current->tcb->state == READY) /* we need a READY state thread to avoid problems */
+  {
+    current->tcb->priority = 9; /* re-prioritise the thread */
+    rlist_push_back(&(priorityTable[current->tcb->priority]), current); /* we push it to the thread */
+}
+}
+
+//-------------------------------------------------------------------------------------------------------------------
 
 /*
   This function must be called at the beginning of each new timeslice.
@@ -470,7 +511,7 @@ void yield(enum SCHED_CAUSE cause)
 */
 
 void gain(int preempt)
-{ //here i need an algorithm giving diff. quantum to priorities---------------------------------------------------------------
+{
   Mutex_Lock(& sched_spinlock);
 
   /* Mark current state */
@@ -526,17 +567,17 @@ static void idle_thread()
 
 
 /*
-  Initialize the scheduler queue
- */
+  Initialize the scheduler queue*/
+//------------------------------------------------------------------------------------------------
 void initialize_scheduler()
-{ 
- for(int i = 0 ; i <= NUMBER_OF_QUEUES-1 ; i++)
-  {
-    rlnode_init(&SCHED[i],NULL);
+{
+ for(int i=0; i<NUMBER_OF_QUEUES; i++){
+    rlnode_init(&SCHED[i], NULL);
   }
+
   rlnode_init(&TIMEOUT_LIST, NULL);
 }
-
+//------------------------------------------------------------------------------------------------
 
 
 void run_scheduler()
@@ -544,10 +585,11 @@ void run_scheduler()
   CCB * curcore = & CURCORE;
 
   /* Initialize current CCB */
-  curcore->idle_thread.priority = 0; //high priority initialization
 
   curcore->id = cpu_core_id;
+
   curcore->current_thread = & curcore->idle_thread;
+
   curcore->idle_thread.owner_pcb = get_pcb(0);
   curcore->idle_thread.type = IDLE_THREAD;
   curcore->idle_thread.state = RUNNING;

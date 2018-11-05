@@ -98,11 +98,10 @@ typedef struct thread_control_block
   Thread_type type;       /**< The type of thread */
   Thread_state state;    /**< The state of the thread */
   Thread_phase phase;    /**< The phase of the thread */
-	 
-
-int priority = 0; 
-
-
+//---------------------------------------------------------------------------------------------------------	
+	int priority; //priority of each thread.
+	int counterMutex; // how many times by time the mutex cause was called for the current thread
+//---------------------------------------------------------------------------------------------------------	
   void (*thread_func)();   /**< The function executed by this thread */
 
   TimerDuration wakeup_time; /**< The time this thread will be woken up by the scheduler */
@@ -110,6 +109,7 @@ int priority = 0;
 
   struct thread_control_block * prev;  /**< previous context */
   struct thread_control_block * next;  /**< next context */
+
   
 } TCB;
 
@@ -125,6 +125,7 @@ int priority = 0;
  *
  ************************/
 
+#define NUMBER_OF_QUEUES 10 //the number of priority queues
 
 /** @brief Core control block.
 
@@ -248,8 +249,12 @@ void run_scheduler(void);
    This function is called during kernel initialization.
  */
 void initialize_scheduler(void); 
+//--------------------------------------------------------------------------------------
 
+void PrioritizeThreads(enum SCHED_CAUSE cause, TCB* tcb); //priority based on cause
 
+void PriorityBoostingMethod(rlnode* priorityTable);
+//--------------------------------------------------------------------------------------
 /**
   @brief Quantum (in microseconds) 
 
@@ -257,7 +262,9 @@ void initialize_scheduler(void);
   */
 #define QUANTUM (10000L)
 
-/** @} */
+#define MaxQuantums (10) //max threads yielded for prioritizing them low->high
+
+#define MaxMutexCalls (2)
 
 #endif
 
