@@ -530,7 +530,7 @@ static void idle_thread()
  */
 void initialize_scheduler()
 { 
- for(int i = 0 ; i <= NUM_OF_QUEUES-1 ; i++)
+ for(int i = 0 ; i <= NUMBER_OF_QUEUES-1 ; i++)
   {
     rlnode_init(&SCHED[i],NULL);
   }
